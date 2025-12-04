@@ -1,70 +1,41 @@
 package main
 
 import (
-    "context"
-    "encoding/json"
-    "log"
+	"context"
+	"encoding/json"
+	"log"
+	"net/http"
 
-    "cloud.google.com/go/pubsub"
-    "quantengine/internal/backtester"
-    "quantengine/internal/strategy"
-    "quantengine/internal/data"
+	"quantengine/internal/worker"
 )
 
-type TaskMessage struct {
-    Strategy  json.RawMessage `json:"strategy"`
-    Symbol    string          `json:"symbol"`
-    Timeframe string          `json:"timeframe"`
-}
-
 func main() {
-    ctx := context.Background()
-    log.Println("Worker Started")
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		var msg struct {
+			Message struct {
+				Data []byte `json:"data"`
+			} `json:"message"`
+		}
 
-    // Pub/Sub subscriber
-    client, err := pubsub.NewClient(ctx, "quantengine")
-    if err != nil {
-        log.Fatal(err)
-    }
+		if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+			log.Println("decode error:", err)
+			return
+		}
 
-    sub := client.Subscription("strategy-tasks-sub")
+		var task worker.TaskMessage
+		if err := json.Unmarshal(msg.Message.Data, &task); err != nil {
+			log.Println("unmarshal error:", err)
+			return
+		}
 
-    sub.ReceiveSettings.MaxOutstandingMessages = 10
-    sub.ReceiveSettings.NumGoroutines = 5
+		log.Println("Running task:", task.Symbol, task.Timeframe)
 
-    err = sub.Receive(ctx, func(ctx context.Context, msg *pubsub.Message) {
-        var task TaskMessage
-        if err := json.Unmarshal(msg.Data, &task); err != nil {
-            log.Println("Bad msg:", err)
-            msg.Nack()
-            return
-        }
+		err := worker.HandleTask(context.Background(), &task)
+		if err != nil {
+			log.Println(err)
+		}
+	})
 
-        // Load candles
-        candles, err := data.LoadCandles(task.Symbol)
-        if err != nil {
-            log.Println("load error:", err)
-            msg.Nack()
-            return
-        }
-
-        // Parse strategy config
-        strat, err := strategy.FromJSON(task.Strategy)
-        if err != nil {
-            log.Println("strat error:", err)
-            msg.Nack()
-            return
-        }
-
-        // Run backtest
-        result := backtester.Run(candles, strat)
-
-        // TODO: write result to BigQuery
-
-        msg.Ack()
-    })
-
-    if err != nil {
-        log.Fatal(err)
-    }
+	log.Println("Worker started on 8080...")
+	http.ListenAndServe(":8080", nil)
 }
