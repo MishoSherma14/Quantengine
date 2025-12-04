@@ -1,65 +1,39 @@
-package main
-
 import (
-	"context"
-	"encoding/json"
-	"log"
+    "context"
+    "encoding/json"
+    "log"
 
-	"cloud.google.com/go/pubsub"
-	"quantengine/internal/runner"
-	"quantengine/internal/strategy"
+    "quantengine/internal/data"
+    "quantengine/internal/runner"
+    "quantengine/internal/backtester"
 )
 
-type JobMessage struct {
-	Strategy json.RawMessage `json:"strategy"`
-	Symbol   string          `json:"symbol"`
-	Timeframe string         `json:"timeframe"`
-}
-
 func main() {
-	ctx := context.Background()
+    ctx := context.Background()
+    log.Println("Worker started...")
 
-	// Pub/Sub subscriber client
-	client, err := pubsub.NewClient(ctx, "quantengine")
-	if err != nil {
-		log.Fatal(err)
-	}
+    msg, err := runner.PullMessage(ctx)  // Pub/Sub
+    if err != nil {
+        log.Fatal(err)
+    }
 
-	sub := client.Subscription("strategy-tasks-sub")
+    strategyJSON := msg.StrategyJSON
+    strategy := runner.ParseStrategy(strategyJSON)
 
-	err = sub.Receive(ctx, func(ctx context.Context, msg *pubsub.Message) {
-		msg.Ack()
+    candles, err := data.LoadCandlesFromGCS(msg.Symbol, msg.Timeframe)
+    if err != nil {
+        log.Fatal(err)
+    }
 
-		var m JobMessage
-		if err := json.Unmarshal(msg.Data, &m); err != nil {
-			log.Println("decode err:", err)
-			return
-		}
+    engine := backtester.NewEngine(strategy, msg.Symbol, candles)
+    engine.Run()
 
-		// parse strategy
-		cfg, err := strategy.FromJSON(m.Strategy)
-		if err != nil {
-			log.Println("strategy parse err:", err)
-			return
-		}
+    result := engine.BuildResultOutput(strategyJSON, candles)
 
-		// run backtest
-		out, err := runner.RunJob(cfg, m.Symbol, m.Timeframe)
-		if err != nil {
-			log.Println("run err:", err)
-			return
-		}
+    err = runner.SaveToBigQuery(ctx, result)
+    if err != nil {
+        log.Fatal(err)
+    }
 
-		// save to BigQuery
-		if err := runner.SaveToBigQuery(ctx, out); err != nil {
-			log.Println("bq err:", err)
-			return
-		}
-
-		log.Println("DONE:", out.StrategyHash, m.Symbol)
-	})
-
-	if err != nil {
-		log.Fatal(err)
-	}
+    log.Println("Result saved:", result.StrategyHash)
 }
