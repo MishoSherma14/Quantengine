@@ -139,3 +139,19 @@ func (e *Engine) updateEquity(pnl float64) {
 	e.Equity += pnl
 	e.Curve = append(e.Curve, e.Equity)
 }
+
+func (e *Engine) BuildResultOutput(strategyJSON string, candles []models.Candle) *models.ResultOutput {
+    return &models.ResultOutput{
+        StrategyHash: e.Strategy.Hash,
+        StrategyJSON: strategyJSON,
+        Symbol:       e.Symbol,
+        WinRate:      e.WinRate(),
+        ProfitFactor: e.ProfitFactor(),
+        MaxDD:        e.MaxDrawdown(),
+        Sharpe:       e.Sharpe(),
+        AvgReturn:    e.AvgReturn(),
+        Score:        e.Score(),
+        EquityCurve:  e.EquityCurveJSON(),
+        TS:           time.Now().Unix(),
+    }
+}
