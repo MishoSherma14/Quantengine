@@ -1,39 +1,69 @@
-import (
-    "context"
-    "encoding/json"
-    "log"
+package main
 
-    "quantengine/internal/data"
-    "quantengine/internal/runner"
-    "quantengine/internal/backtester"
+import (
+	"context"
+	"encoding/json"
+	"log"
+
+	"quantengine/internal/data"
+	"quantengine/internal/runner"
+	"quantengine/internal/strategy"
 )
 
+type PubSubMessage struct {
+	Message struct {
+		Data []byte `json:"data"`
+	} `json:"message"`
+}
+
+type TaskInput struct {
+	Strategy  json.RawMessage `json:"strategy"`
+	Symbol    string          `json:"symbol"`
+	Timeframe string          `json:"timeframe"`
+}
+
 func main() {
-    ctx := context.Background()
-    log.Println("Worker started...")
+	log.Println("Worker started")
 
-    msg, err := runner.PullMessage(ctx)  // Pub/Sub
-    if err != nil {
-        log.Fatal(err)
-    }
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.Background()
 
-    strategyJSON := msg.StrategyJSON
-    strategy := runner.ParseStrategy(strategyJSON)
+		var m PubSubMessage
+		json.NewDecoder(r.Body).Decode(&m)
 
-    candles, err := data.LoadCandlesFromGCS(msg.Symbol, msg.Timeframe)
-    if err != nil {
-        log.Fatal(err)
-    }
+		var task TaskInput
+		json.Unmarshal(m.Message.Data, &task)
 
-    engine := backtester.NewEngine(strategy, msg.Symbol, candles)
-    engine.Run()
+		// Load candles
+		candles, err := data.LoadCandlesFromGCS(task.Symbol, task.Timeframe)
+		if err != nil {
+			log.Println("LoadCandles error:", err)
+			return
+		}
 
-    result := engine.BuildResultOutput(strategyJSON, candles)
+		// Build strategy
+		conf, err := strategy.FromJSON(task.Strategy)
+		if err != nil {
+			log.Println("strategy parse error:", err)
+			return
+		}
 
-    err = runner.SaveToBigQuery(ctx, result)
-    if err != nil {
-        log.Fatal(err)
-    }
+		// Run backtest
+		out, err := runner.RunBacktest(conf, task.Symbol, candles)
+		if err != nil {
+			log.Println("backtest error:", err)
+			return
+		}
 
-    log.Println("Result saved:", result.StrategyHash)
+		// Save result to BQ
+		err = data.SaveToBigQuery(ctx, out)
+		if err != nil {
+			log.Println("BQ save error:", err)
+			return
+		}
+
+		log.Println("Backtest OK:", task.Symbol)
+	})
+
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }
