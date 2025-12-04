@@ -3,75 +3,60 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
-	"os"
 
 	"cloud.google.com/go/pubsub"
-	"quantengine/internal/data"
 	"quantengine/internal/runner"
 	"quantengine/internal/strategy"
 )
 
-type TaskMessage struct {
-	Strategy  json.RawMessage `json:"strategy"`
-	Symbol    string          `json:"symbol"`
-	Timeframe string          `json:"timeframe"`
+type JobMessage struct {
+	Strategy json.RawMessage `json:"strategy"`
+	Symbol   string          `json:"symbol"`
+	Timeframe string         `json:"timeframe"`
 }
 
 func main() {
-	fmt.Println("Worker Booted...")
-
 	ctx := context.Background()
-	pubsubClient, err := pubsub.NewClient(ctx, os.Getenv("GOOGLE_CLOUD_PROJECT"))
+
+	// Pub/Sub subscriber client
+	client, err := pubsub.NewClient(ctx, "quantengine")
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 
-	sub := pubsubClient.Subscription(os.Getenv("PUBSUB_SUBSCRIPTION"))
+	sub := client.Subscription("strategy-tasks-sub")
 
 	err = sub.Receive(ctx, func(ctx context.Context, msg *pubsub.Message) {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Println("Recovered:", r)
-			}
-		}()
-
-		var t TaskMessage
-		if err := json.Unmarshal(msg.Data, &t); err != nil {
-			log.Println("JSON decode error:", err)
-			msg.Nack()
-			return
-		}
-
-		// Load candles from GCS
-		candles, err := data.LoadCandlesFromGCS(t.Symbol, t.Timeframe)
-		if err != nil {
-			log.Println("Load candles error:", err)
-			msg.Nack()
-			return
-		}
-
-		// Parse strategy config
-		conf, err := strategy.FromJSON(t.Strategy)
-		if err != nil {
-			log.Println("Strategy decode error:", err)
-			msg.Nack()
-			return
-		}
-
-		// Execute backtest
-		result := runner.Run(conf, candles)
-
-		// Save results
-		err = runner.SaveToBigQuery(ctx, result)
-		if err != nil {
-			log.Println("BQ Save error:", err)
-			msg.Nack()
-			return
-		}
-
 		msg.Ack()
+
+		var m JobMessage
+		if err := json.Unmarshal(msg.Data, &m); err != nil {
+			log.Println("decode err:", err)
+			return
+		}
+
+		// parse strategy
+		cfg, err := strategy.FromJSON(m.Strategy)
+		if err != nil {
+			log.Println("strategy parse err:", err)
+			return
+		}
+
+		// run backtest
+		out, err := runner.RunJob(cfg, m.Symbol, m.Timeframe)
+		if err != nil {
+			log.Println("run err:", err)
+			return
+		}
+
+		// save to BigQuery
+		if err := runner.SaveToBigQuery(ctx, out); err != nil {
+			log.Println("bq err:", err)
+			return
+		}
+
+		log.Println("DONE:", out.StrategyHash, m.Symbol)
 	})
 
 	if err != nil {
