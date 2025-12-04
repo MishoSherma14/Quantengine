@@ -19,3 +19,22 @@ func RunBacktest(p BacktestPayload) (*backtester.Result, error) {
 	return result, nil
 }
 
+func RunBacktest(strategy *strategy.Config, symbol string, candles []models.Candle) (*ResultOutput, error) {
+	result := backtester.Run(strategy, candles)
+
+	out := &ResultOutput{
+		StrategyHash: strategy.Hash(),
+		StrategyJSON: strategy.ToJSON(),
+		Symbol:       symbol,
+		WinRate:      result.WinRate,
+		ProfitFactor: result.ProfitFactor,
+		MaxDrawdown:  result.MaxDrawdown,
+		Sharpe:       result.Sharpe,
+		AvgReturn:    result.AvgReturn,
+		Score:        result.Score(),  // სპეციალურად ავაგებთ scoring მოდელს Phase 9-ში
+		EquityCurve:  result.EquityCurve,
+		Timestamp:    time.Now(),
+	}
+
+	return out, nil
+}
