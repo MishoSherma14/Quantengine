@@ -1,4 +1,4 @@
-package runner
+package data
 
 import (
 	"cloud.google.com/go/bigquery"
@@ -14,4 +14,3 @@ func SaveToBigQuery(ctx context.Context, r *ResultOutput) error {
 	u := client.Dataset("quant_results").Table("backtest_results").Uploader()
 	return u.Put(ctx, r)
 }
-
